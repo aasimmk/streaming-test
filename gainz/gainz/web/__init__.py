@@ -1,2 +1,0 @@
-"""WEB API for gainz."""
-
