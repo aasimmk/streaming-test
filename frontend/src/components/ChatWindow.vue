@@ -1,6 +1,6 @@
 <template>
   <div class="chat-window">
-    <h2>{{ conversation.name }}</h2>
+    <h2>Title - {{ conversation.name }}</h2>
     <div class="messages">
       <div
         v-for="(msg, index) in conversation.messages"

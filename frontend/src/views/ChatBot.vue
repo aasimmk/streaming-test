@@ -21,7 +21,7 @@
 import { ref, computed } from 'vue';
 import ConversationList from '@/components/ConversationList.vue';
 import ChatWindow from '@/components/ChatWindow.vue';
-import api from "@/services/api";
+// import api from "@/services/api";
 
 export default {
   name: 'ChatBot',
@@ -31,28 +31,15 @@ export default {
   },
   setup() {
     const conversations = ref([
-      {
-        id: 1,
-        name: 'Chat with Support',
-        messages: [
-          { sender: 'bot', text: 'Hello! How can I assist you today?' },
-        ],
-      },
-      {
-        id: 2,
-        name: 'Chat with Sales',
-        messages: [
-          { sender: 'bot', text: 'Hi! Interested in our products?' },
-        ],
-      },
+
     ]);
 
-    try {
-      const response = api.get('/threads');
-      this.message = response.data;
-    } catch (err) {
-      console.error(err);
-    }
+    // try {
+    //   const response = api.get('/threads');
+    //   this.message = response.data;
+    // } catch (err) {
+    //   console.error(err);
+    // }
 
     const activeConversationId = ref(null);
 
@@ -66,7 +53,7 @@ export default {
         : 1;
       const newConversation = {
         id: newId,
-        name: `New Conversation ${newId}`,
+        name: `Chat ${newId}`,
         messages: [],
       };
       conversations.value.push(newConversation);

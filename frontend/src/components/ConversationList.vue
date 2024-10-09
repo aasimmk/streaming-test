@@ -8,7 +8,7 @@
         :class="{ active: conversation.id === activeConversationId }"
         @click="$emit('selectConversation', conversation.id)"
       >
-        {{ conversation.id }}
+        Chat {{ conversation.id }}
       </li>
     </ul>
     <button @click="$emit('addConversation')">+ Add Conversation</button>
@@ -24,7 +24,7 @@ export default {
       required: true,
     },
     activeConversationId: {
-      type: String,
+      type: Number,
       default: null,
     },
   },
