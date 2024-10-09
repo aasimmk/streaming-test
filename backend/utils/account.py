@@ -1,6 +1,6 @@
 from fastapi import Depends, HTTPException, status
 
-from ..core import models, auth
+from backend.core import models, auth
 
 
 def get_user(username: str):

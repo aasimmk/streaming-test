@@ -92,4 +92,4 @@ env = ConfigLoader()
 
 SECRET_KEY = env.get("SECRET_KEY", required=True)
 ALGORITHM = env.get("ALGORITHM", default="HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = env.get("ACCESS_TOKEN_EXPIRE_MINUTES", default=60)
+ACCESS_TOKEN_EXPIRE_MINUTES = int(env.get("ACCESS_TOKEN_EXPIRE_MINUTES", default=60))
