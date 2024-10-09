@@ -1,8 +1,14 @@
 <template>
-  <div class="dashboard">
-    <h2>Dashboard</h2>
-    <p>{{ message }}</p>
-    <button @click="logout">Logout</button>
+  <div class="dashboard container mt-5">
+    <div class="row justify-content-center">
+      <div class="col-6 text-center">
+        <h2 class="mb-4">Dashboard</h2>
+        <p class="mb-3">{{ message }}</p>
+        <button class="btn btn-primary mb-3" @click="logout">Logout</button>
+
+        <router-link to="/chatbot" class="btn btn-secondary">Go to Chatbot</router-link>
+      </div>
+    </div>
   </div>
 </template>
 
