@@ -5,13 +5,14 @@ from typing import Any, Optional
 
 
 class ConfigLoader:
-    def __init__(self, dotenv_path: Optional[str] = None):
+    def __init__(self, dotenv_filename: Optional[str] = ".env") -> None:
         """
         Load the .env file and initialize config variables.
 
-        :param dotenv_path: Path to the .env file. `Default: .env`
+        :param dotenv_filename: Name of the .env file. `Default: .env`
         """
-        load_dotenv(dotenv_path or '.env')
+        dotenv_path = os.path.join(os.path.dirname(__file__), dotenv_filename)
+        load_dotenv(dotenv_path)
 
     @staticmethod
     def _str_to_bool(value: str) -> bool:
@@ -53,6 +54,7 @@ class ConfigLoader:
         except json.JSONDecodeError:
             raise ValueError(f"Error converting {key} to dict: invalid JSON format.")
 
+    # noinspection PyTypeChecker
     def get(self, key: str, default: Any = None, required: bool = False) -> Any:
         """
         Retrieve the environment variable and convert it to the type of the default value.
@@ -68,19 +70,19 @@ class ConfigLoader:
             if required:
                 raise ValueError(f"Required environment variable '{key}' is missing.")
             else:
-                return None
+                return value
 
-        if isinstance(default, bool):
+        if isinstance(value, bool):
             return self._str_to_bool(value)
-        elif isinstance(default, int):
+        elif isinstance(value, int):
             return self._to_int(value, key)
-        elif isinstance(default, float):
+        elif isinstance(value, float):
             return self._to_float(value, key)
-        elif isinstance(default, list):
+        elif isinstance(value, list):
             return self._to_list(value, key)
-        elif isinstance(default, dict):
+        elif isinstance(value, dict):
             return self._to_dict(value, key)
-        elif isinstance(default, str):
+        elif isinstance(value, str):
             return value
         else:
             raise ValueError(f"Unsupported default type: {type(default)} for key: {key}")
