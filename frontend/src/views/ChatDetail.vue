@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-window">
+  <div class="chat-detail">
     <h2>{{ conversation.title }}</h2>
     <div class="messages">
       <div
@@ -25,49 +25,53 @@
 
 <script>
 import { ref, onMounted, watch, nextTick } from 'vue';
-// import api from '@/services/api';
+import { useRoute } from 'vue-router';
+import api from '@/services/api';
 
 export default {
-  name: 'ChatWindow',
+  name: 'ChatDetail',
   props: {
-    conversation: {
-      type: Object,
-      required: true,
-    },
     currentUserId: {
       type: Number,
       required: true,
     },
   },
-  emits: ['sendMessage'],
-  setup(props) {
+  setup() {
+    const route = useRoute();
+    const conversation = ref({});
     const messages = ref([]);
     const newMessage = ref('');
     const messagesEnd = ref(null);
-    let socket = null;
 
-    const connectWebSocket = () => {
-      const token = localStorage.getItem('access_token');
-      socket = new WebSocket(`ws://localhost:8000/ws/conversations/${props.conversation.id}?token=${token}`);
-
-      socket.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        messages.value.push(message);
+    const fetchConversation = async () => {
+      try {
+        const response = await api.get(`/conversations/${route.params.conversation_id}`);
+        conversation.value = response.data;
+        messages.value = response.data.messages;
         scrollToBottom();
-      };
-
-      socket.onclose = () => {
-        console.log('WebSocket connection closed');
-      };
+      } catch (error) {
+        console.error('Error fetching conversation:', error);
+      }
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
       if (!newMessage.value.trim()) return;
-      const message = {
-        content: newMessage.value.trim(),
-      };
-      socket.send(JSON.stringify(message));
-      newMessage.value = '';
+
+      try {
+        messages.value.push(newMessage.value.trim());
+        const message_response = await api.post(`/conversations/${conversation.value.id}/messages/`, {
+          content: newMessage.value.trim(),
+        });
+        console.log(message_response);
+        // const query_response = await api.post(`/conversations/${conversation.value.id}/query/`, {
+        //   content: newMessage.value.trim(),
+        // });
+        // messages.value.push(query_response.data);
+        newMessage.value = '';
+        scrollToBottom();
+      } catch (error) {
+        console.error('Error sending message:', error);
+      }
     };
 
     const scrollToBottom = () => {
@@ -79,21 +83,18 @@ export default {
     };
 
     watch(
-      () => props.conversation.id,
+      () => route.params.conversation_id,
       () => {
-        if (socket) {
-          socket.close();
-        }
-        messages.value = [];
-        connectWebSocket();
+        fetchConversation();
       }
     );
 
     onMounted(() => {
-      connectWebSocket();
+      fetchConversation();
     });
 
     return {
+      conversation,
       messages,
       newMessage,
       handleSubmit,
@@ -104,7 +105,7 @@ export default {
 </script>
 
 <style scoped>
-.chat-window {
+.chat-detail {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -113,7 +114,7 @@ export default {
   position: relative;
 }
 
-.chat-window h2 {
+.chat-detail h2 {
   margin-top: 0;
   border-bottom: 1px solid #ddd;
   padding-bottom: 10px;

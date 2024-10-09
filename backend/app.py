@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
-
+from datetime import datetime
 from core import schemas, auth, models
 from utils import account as account_utils
 from _config import ALGORITHM, SECRET_KEY
@@ -17,6 +17,14 @@ origins = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
 ]
+
+users_db = {}
+conversations_db = {}
+messages_db = {}
+user_id_counter = 1
+conversation_id_counter = 1
+message_id_counter = 1
+
 
 app = FastAPI()
 
@@ -28,6 +36,55 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class GetOrCreateThreadRequest(BaseModel):
+    title: str
+
+
+class UserBase(BaseModel):
+    username: str
+    # email: EmailStr
+
+
+class UserCreate(UserBase):
+    password: str
+
+
+class MessageBase(BaseModel):
+    content: str
+
+
+class MessageCreate(MessageBase):
+    pass
+
+
+class MessageOut(MessageBase):
+    id: int
+    content: str
+    sender_id: str
+    sender_username: str
+    timestamp: datetime
+
+
+class UserOut(UserBase):
+    id: int
+    created_at: datetime
+
+
+class ConversationBase(BaseModel):
+    title: str
+
+
+class ConversationCreate(ConversationBase):
+    participant_ids: List[int]
+
+
+class ConversationOut(ConversationBase):
+    id: int
+    created_at: datetime
+    participants: List[str]
+    messages: List[MessageOut] = []
 
 
 @app.post("/login", response_model=schemas.Token)
@@ -50,7 +107,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# Protected route example
 @app.get("/protected-route")
 def protected_route(token: models.UserInDB = Depends(account_utils.get_current_user)):
     if not token:
@@ -74,6 +130,7 @@ class CreateThreadRequest(BaseModel):
 
 class AddParticipantRequest(BaseModel):
     username: str
+
 
 threads_db: Dict[str, ConversationThread] = {}
 
@@ -110,44 +167,129 @@ def get_or_create_thread(title: str, username: str) -> ConversationThread:
     return create_new_thread(title, username)
 
 
-@app.get("/threads", response_model=List[ConversationThread])
-async def list_conversation_threads(current_user: models.UserInDB = Depends(account_utils.get_current_user)):
-    user_threads = [
-        thread for thread in list_threads()
-        if current_user.username in thread.participants
+class ConversationParticipant(BaseModel):
+    user_id: int
+    conversation_id: int
+
+
+@app.post("/conversations/", response_model=ConversationOut)
+def create_new_conversation(
+        conversation: ConversationCreate,
+        current_user: dict = Depends(account_utils.get_current_user_data)
+):
+    global conversation_id_counter
+    participants = [current_user.get("username")]
+    for pid in conversation.participant_ids:
+        participant = next((u for u in users_db if u.id == pid), None)
+        if participant and participant not in participants:
+            participants.append(participant)
+    new_conversation = ConversationOut(
+        id=conversation_id_counter,
+        title=conversation.title,
+        created_at=datetime.utcnow(),
+        participants=participants,
+        messages=[]
+    )
+    conversations_db[conversation_id_counter] = new_conversation
+    conversation_id_counter += 1
+    return new_conversation
+
+
+@app.get("/conversations/", response_model=List[ConversationOut])
+def read_user_conversations(current_user: dict = Depends(account_utils.get_current_user_data)):
+    user_convs = current_user.get("conversations") or []
+    convs_out = []
+    for conv in user_convs:
+        conv_out = ConversationOut(
+            id=conv["id"],
+            title=conv["title"],
+            created_at=conv["created_at"],
+            participants=conv.participants,
+            messages=[
+                MessageOut(
+                    id=m["id"],
+                    content=m["content"],
+                    sender_id=m["sender_id"],
+                    sender_username=m["sender_username"],
+                    timestamp=m["timestamp"]
+                ) for m in conv["messages"]
+            ]
+        )
+        convs_out.append(conv_out)
+    return convs_out
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationOut)
+def read_conversation(conversation_id: int, current_user: dict = Depends(account_utils.get_current_user_data)):
+    conv = conversations_db.get(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if current_user.get("username") not in conv.participants:
+        raise HTTPException(status_code=403, detail="Not authorized to access this conversation")
+    conv_out = ConversationOut(
+        id=conv.id,
+        title=conv.title,
+        created_at=conv.created_at,
+        participants=conv.participants,
+        messages=[
+            MessageOut(
+                id=message["id"],
+                content=message["content"],
+                sender_id=message["sender_id"],
+                sender_username=message["sender_username"],
+                timestamp=message["timestamp"]
+            ) for message in conv.messages
+        ]
+    )
+    return conv_out
+
+
+@app.post("/conversations/{conversation_id}/messages/", response_model=MessageOut)
+def create_message_in_conversation(conversation_id: int, message: MessageCreate,
+                                   current_user: dict = Depends(account_utils.get_current_user_data)):
+    global message_id_counter
+    conv = conversations_db.get(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if current_user.get("username") not in conv.participants:
+        raise HTTPException(status_code=403, detail="Not authorized to send messages in this conversation")
+    msg = {
+        "id": message_id_counter,
+        "content": message.content,
+        "sender_id": current_user["username"],  # ToDo: implement user id
+        "sender_username": current_user["username"],
+        "timestamp": datetime.utcnow()
+    }
+    message_out = MessageOut(
+        id=msg["id"],
+        content=msg["content"],
+        sender_id=msg["sender_id"],
+        sender_username=msg["sender_username"],
+        timestamp=msg["timestamp"]
+    )
+    message_id_counter += 1
+
+    conv.messages.append(msg)
+    return message_out
+
+
+@app.get("/conversations/{conversation_id}/messages/", response_model=List[MessageOut])
+def read_messages(conversation_id: int, current_user: dict = Depends(account_utils.get_current_user)):
+    conv = conversations_db.get(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if current_user not in conv["participants"]:
+        raise HTTPException(status_code=403, detail="Not authorized to view messages in this conversation")
+    messages_out = [
+        MessageOut(
+            id=m["id"],
+            content=m["content"],
+            sender_id=m["sender_id"],
+            sender_username=m["sender_username"],
+            timestamp=m["timestamp"]
+        ) for m in conv["messages"]
     ]
-    return user_threads
-
-
-@app.post("/threads", response_model=ConversationThread)
-async def create_conversation_thread(
-        request: CreateThreadRequest,
-        current_user: models.UserInDB = Depends(account_utils.get_current_user)):
-    thread = create_new_thread(title=request.title, creator_username=current_user.username)
-    return thread
-
-
-class GetOrCreateThreadRequest(BaseModel):
-    title: str
-
-
-@app.post("/threads/get_or_create", response_model=ConversationThread)
-async def get_or_create_conversation_thread(request: GetOrCreateThreadRequest,
-                                            current_user: models.UserInDB = Depends(account_utils.get_current_user)):
-    thread = get_or_create_thread(title=request.title, username=current_user.username)
-    return thread
-
-
-@app.post("/threads/{thread_id}/add", response_model=ConversationThread)
-async def add_participant_to_thread(thread_id: str, request: AddParticipantRequest,
-                                    current_user: models.UserInDB = Depends(account_utils.get_current_user)):
-    thread = get_thread(thread_id)
-    if thread is None:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    if current_user.username not in thread.participants:
-        raise HTTPException(status_code=403, detail="Not authorized to modify this thread")
-    add_participant(thread_id, request.username)
-    return thread
+    return messages_out
 
 
 @app.websocket("/ws/{thread_id}")
@@ -201,10 +343,6 @@ async def broadcast(thread_id: str, message: str):
             await connection.send_text(message)
         except Exception as e:
             print(f"Error sending message: {e}")
-
-
-class AddParticipantRequest(BaseModel):
-    username: str
 
 
 if __name__ == "__main__":

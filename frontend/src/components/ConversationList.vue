@@ -8,30 +8,66 @@
         :class="{ active: conversation.id === activeConversationId }"
         @click="$emit('selectConversation', conversation.id)"
       >
-        Chat {{ conversation.id }}
+        {{ conversation.title }}
       </li>
     </ul>
-    <button @click="$emit('addConversation')">+ Add Conversation</button>
+    <button @click="addConversation">+ Add Conversation</button>
   </div>
 </template>
 
 <script>
+import { ref, onMounted } from 'vue';
+import api from '@/services/api';
+
 export default {
   name: 'ConversationList',
   props: {
-    conversations: {
-      type: Array,
-      required: true,
-    },
     activeConversationId: {
       type: Number,
       default: null,
     },
   },
+  setup(props, { emit }) {
+    const conversations = ref([]);
+
+    const fetchConversations = async () => {
+      try {
+        const response = await api.get('/conversations/');
+        conversations.value = response.data;
+      } catch (error) {
+        console.error('Error fetching conversations:', error);
+      }
+    };
+
+    const addConversation = async () => {
+      const title = prompt('Enter conversation title:');
+      if (!title) return;
+
+      try {
+        const response = await api.post('/conversations/', {
+          title,
+          participant_ids: [], // Add participant IDs here
+        });
+        conversations.value.push(response.data);
+        emit('selectConversation', response.data.id);
+      } catch (error) {
+        console.error('Error creating conversation:', error);
+      }
+    };
+
+    onMounted(() => {
+      fetchConversations();
+    });
+
+    return {
+      conversations,
+      addConversation,
+    };
+  },
 };
 </script>
 
-<style>
+<style scoped>
 .conversation-list {
   width: 250px;
   border-right: 1px solid #ddd;

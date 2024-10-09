@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import UserLogin from '@/views/UserLogin.vue';
 import UserDashboard from '@/views/UserDashboard.vue';
 import ChatBot from '@/views/ChatBot.vue';
+import ChatDetail from '@/views/ChatDetail.vue';
 
 const routes = [
   {
@@ -24,6 +25,12 @@ const routes = [
     path: '/chatbot',
     name: 'ChatBot',
     component: ChatBot,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/chatbot/:conversation_id',
+    name: 'ChatDetail',
+    component: ChatDetail,
     meta: { requiresAuth: true },
   },
 ];
