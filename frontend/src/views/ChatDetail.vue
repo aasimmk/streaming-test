@@ -1,13 +1,22 @@
 <template>
   <div class="chat-detail">
-    <h2>{{ conversation.title }}</h2>
+    <h2>Chat Title: {{ conversation.title }}</h2>
     <div class="messages">
       <div
-        v-for="message in messages"
-        :key="message.id"
-        :class="['message', message.sender_id === currentUserId ? 'user' : 'bot']"
+        v-for="(message, index) in messages"
+        :key="index"
+        :class="['message', message.sender_id === 'bot' ? 'user' : 'bot']"
       >
-        <span>{{ message.content }}</span>
+        <span>Query: {{ message.content }}</span>
+        <div v-if="message.response" :class="['message', 'user', 'archived']">
+          <span>{{ message.response }}</span>
+        </div>
+      </div>
+      <div
+        v-if="responseMessage!==''"
+        :class="['message', 'user']"
+      >
+        <span>{{ responseMessage }}</span>
       </div>
       <div ref="messagesEnd"></div>
     </div>
@@ -30,11 +39,49 @@ import api from '@/services/api';
 
 export default {
   name: 'ChatDetail',
-  props: {
-    currentUserId: {
-      type: Number,
-      required: true,
+  data() {
+    return {
+      socket: null,
+      responseMessage: '',
+    }
+  },
+  mounted() {
+    this.socket = new WebSocket('ws://localhost:8000/stream');
+  },
+  methods: {
+    async createMessage(){
+      if (this.conversation.id === 'undefined') return;
+      const response = await api.post(`/conversations/${this.conversation.id}/messages/`, {
+        content: this.newMessage.trim(),
+      });
+      this.messages.push(response.data);
+      this.newMessage = '';
+      console.log("Message added >>>>>>  " + JSON.stringify(response.data));
+      return response.data;
     },
+    async handleSubmit() {
+      // Add message
+      const createdMessageData = await this.createMessage();
+      createdMessageData['access_token'] = localStorage.getItem('access_token');
+      createdMessageData['conversation_id'] = this.conversation.id;
+
+      // Send data to WS
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        console.log("Sending to WS >>>>>>  " + JSON.stringify(createdMessageData));
+        this.socket.send(JSON.stringify(createdMessageData));
+        this.responseMessage = '';
+        this.newMessage = ''
+      }
+      this.socket.onmessage = (event) => {
+        this.responseMessage += event.data;
+      }
+      this.socket.onclose = () => {
+        console.log('Socket onclosed called')
+        this.socket = null;
+        this.messages.push({ sender_id: 'bot', content: this.responseMessage });
+        this.responseMessage = '';
+      }
+    }
   },
   setup() {
     const route = useRoute();
@@ -51,26 +98,6 @@ export default {
         scrollToBottom();
       } catch (error) {
         console.error('Error fetching conversation:', error);
-      }
-    };
-
-    const handleSubmit = async () => {
-      if (!newMessage.value.trim()) return;
-
-      try {
-        messages.value.push(newMessage.value.trim());
-        const message_response = await api.post(`/conversations/${conversation.value.id}/messages/`, {
-          content: newMessage.value.trim(),
-        });
-        console.log(message_response);
-        // const query_response = await api.post(`/conversations/${conversation.value.id}/query/`, {
-        //   content: newMessage.value.trim(),
-        // });
-        // messages.value.push(query_response.data);
-        newMessage.value = '';
-        scrollToBottom();
-      } catch (error) {
-        console.error('Error sending message:', error);
       }
     };
 
@@ -97,7 +124,6 @@ export default {
       conversation,
       messages,
       newMessage,
-      handleSubmit,
       messagesEnd,
     };
   },
@@ -141,6 +167,10 @@ export default {
 .message.bot {
   background-color: #f1f0f0;
   align-self: flex-start;
+}
+
+.message.archived {
+  margin-left: -6px;
 }
 
 .message-input {
