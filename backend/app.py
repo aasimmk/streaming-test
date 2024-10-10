@@ -1,14 +1,16 @@
 from collections import defaultdict
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from jose import JWTError, jwt
 from openai import OpenAI
 from pydantic import BaseModel
 from datetime import datetime
 
-from backend.open_ai import client
+from backend._config import SECRET_KEY, ALGORITHM
+from backend.open_ai import client, EventHandler
 from core import schemas, auth, models
 from utils import account as account_utils
 
@@ -126,12 +128,6 @@ def list_threads() -> List[ReadConversation]:
     return list(conversations_db.values())
 
 
-# def add_participant(thread_id: str, username: str):
-#     thread = conversations_db.get(thread_id)
-#     if thread and username not in thread.participants:
-#         thread.participants.append(username)
-
-
 class ConversationParticipant(BaseModel):
     user_id: int
     conversation_id: int
@@ -142,15 +138,10 @@ def create_new_conversation(
         conversation: ReadConversation,
         current_user: dict = Depends(account_utils.get_current_user_data)
 ):
-    global conversation_id_counter
-    participants = [current_user.get("username")]
-    for pid in conversation.participant_ids:
-        participant = next((u for u in users_db if u.id == pid), None)
-        if participant and participant not in participants:
-            participants.append(participant)
-            # add other users forcefully
-            participant.extend(["admin", "khan"])
+    global conversation_id_counter  # I know it's bad, but need for persistent behaviour for demo.
 
+    # add other users forcefully for demo.
+    participants = [current_user.get("username"), "admin", "khan"]
     assistant = client.beta.assistants.create(
         instructions="You are a weather bot. Use the provided functions to answer questions.",
         model="gpt-4o",
@@ -203,6 +194,7 @@ def create_new_conversation(
         title=conversation.title,
         created_at=datetime.utcnow(),
         participant_ids=participants,
+        messages=[],
         open_ai_assistant_id=assistant.id,
         open_ai_thread_id=thread.id,
     )
@@ -234,11 +226,12 @@ def read_conversation(conversation_id: int, current_user: dict = Depends(account
         participant_ids=conv.participant_ids,
         messages=[
             MessageOut(
-                id=message["id"],
-                content=message["content"],
-                sender_id=message["sender_id"],
-                sender_username=message["sender_username"],
-                timestamp=message["timestamp"]
+                id=message.id,
+                content=message.content,
+                sender_id=message.sender_id,
+                sender_username=message.sender_username,
+                response=message.response,
+                timestamp=message.timestamp
             ) for message in conv.messages
         ]
     )
@@ -252,7 +245,7 @@ def create_message_in_conversation(conversation_id: int, message: MessageCreate,
     conv = conversations_db.get(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    if current_user.get("username") not in conv.participants:
+    if current_user.get("username") not in conv.participant_ids:
         raise HTTPException(status_code=403, detail="Not authorized to send messages in this conversation")
     msg = {
         "id": message_id_counter,
@@ -271,7 +264,7 @@ def create_message_in_conversation(conversation_id: int, message: MessageCreate,
     )
     message_id_counter += 1
 
-    conv.messages.append(msg)
+    conv.messages.append(message_out)
     return message_out
 
 
@@ -292,6 +285,65 @@ def read_messages(conversation_id: int, current_user: dict = Depends(account_uti
         ) for m in conv["messages"]
     ]
     return messages_out
+
+
+async def broadcast(conversation_id: str, message: str):
+    connections = active_connections.get(conversation_id, [])
+    for connection in connections:
+        try:
+            await connection.send_text(message)
+        except Exception as e:
+            print(f"Error sending message: {e}")
+
+
+@app.websocket("/stream")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+
+    while True:
+        full_text_response = ""
+        prompt_data = await websocket.receive_json()
+        print(f"Websocket message: {prompt_data}")
+        try:
+            token = prompt_data["access_token"]
+
+            try:
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                username: str = payload.get("sub")
+                if username is None:
+                    await websocket.close(code=1008)
+                    return
+            except JWTError:
+                await websocket.close(code=1008)
+                return
+
+            prompt = prompt_data["content"]
+            conversation = conversations_db.get(prompt_data["conversation_id"])
+            message_id = prompt_data["id"]
+            message = next((msg for msg in conversation.messages if msg.id == message_id), None)
+
+            # Add message to the openai thread
+            open_ai_message = client.beta.threads.messages.create(
+                thread_id=conversation.open_ai_thread_id,
+                role="user",
+                content=prompt,
+            )
+            print(open_ai_message)
+            with client.beta.threads.runs.stream(
+                    thread_id=conversation.open_ai_thread_id,
+                    assistant_id=conversation.open_ai_assistant_id,
+                    event_handler=EventHandler()
+            ) as stream:
+                for event in stream:
+                    if event.data.object == 'thread.message.delta' and event.data.delta.content:
+                        text = event.data.delta.content[0].text.value
+                        full_text_response += text
+                        print(text, end='', flush=True)
+                        await websocket.send_text(text)
+            if message:
+                message.response = full_text_response
+        except WebSocketDisconnect:
+            await websocket.close()
 
 
 if __name__ == "__main__":
