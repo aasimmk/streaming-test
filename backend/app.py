@@ -1,16 +1,16 @@
-import uuid
 from collections import defaultdict
-from typing import List, Dict, Optional
+from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import JWTError, jwt
+from openai import OpenAI
 from pydantic import BaseModel
 from datetime import datetime
+
+from backend.open_ai import client
 from core import schemas, auth, models
 from utils import account as account_utils
-from _config import ALGORITHM, SECRET_KEY
 
 active_connections = defaultdict(list)
 origins = [
@@ -24,9 +24,10 @@ messages_db = {}
 user_id_counter = 1
 conversation_id_counter = 1
 message_id_counter = 1
-
+threads_db = {}
 
 app = FastAPI()
+openai_client = OpenAI()
 
 # noinspection PyTypeChecker
 app.add_middleware(
@@ -64,6 +65,7 @@ class MessageOut(MessageBase):
     content: str
     sender_id: str
     sender_username: str
+    response: Optional[str]
     timestamp: datetime
 
 
@@ -74,17 +76,19 @@ class UserOut(UserBase):
 
 class ConversationBase(BaseModel):
     title: str
+    participant_ids: List[str]
 
 
-class ConversationCreate(ConversationBase):
-    participant_ids: List[int]
+class ReadConversation(ConversationBase):
+    pass
 
 
-class ConversationOut(ConversationBase):
+class WriteConversation(ConversationBase):
     id: int
     created_at: datetime
-    participants: List[str]
     messages: List[MessageOut] = []
+    open_ai_assistant_id: Optional[str] = None
+    open_ai_thread_id: Optional[str] = None
 
 
 @app.post("/login", response_model=schemas.Token)
@@ -118,53 +122,14 @@ def protected_route(token: models.UserInDB = Depends(account_utils.get_current_u
     return {"message": f"Hello, {token.username}! This is a protected route."}
 
 
-class ConversationThread(BaseModel):
-    id: str
-    title: str
-    participants: List[str]
+def list_threads() -> List[ReadConversation]:
+    return list(conversations_db.values())
 
 
-class CreateThreadRequest(BaseModel):
-    title: str
-
-
-class AddParticipantRequest(BaseModel):
-    username: str
-
-
-threads_db: Dict[str, ConversationThread] = {}
-
-
-def create_new_thread(title: str, creator_username: str) -> ConversationThread:
-    thread_id = str(uuid.uuid4())
-    thread = ConversationThread(
-        id=thread_id,
-        title=title,
-        participants=[creator_username]
-    )
-    threads_db[thread_id] = thread
-    return thread
-
-
-def get_thread(thread_id: str) -> Optional[ConversationThread]:
-    return threads_db.get(thread_id)
-
-
-def list_threads() -> List[ConversationThread]:
-    return list(threads_db.values())
-
-
-def add_participant(thread_id: str, username: str):
-    thread = threads_db.get(thread_id)
-    if thread and username not in thread.participants:
-        thread.participants.append(username)
-
-
-def get_or_create_thread(title: str, username: str) -> ConversationThread:
-    for thread in threads_db.values():
-        if thread.title == title and username in thread.participants:
-            return thread
-    return create_new_thread(title, username)
+# def add_participant(thread_id: str, username: str):
+#     thread = conversations_db.get(thread_id)
+#     if thread and username not in thread.participants:
+#         thread.participants.append(username)
 
 
 class ConversationParticipant(BaseModel):
@@ -172,9 +137,9 @@ class ConversationParticipant(BaseModel):
     conversation_id: int
 
 
-@app.post("/conversations/", response_model=ConversationOut)
+@app.post("/conversations/", response_model=WriteConversation)
 def create_new_conversation(
-        conversation: ConversationCreate,
+        conversation: ReadConversation,
         current_user: dict = Depends(account_utils.get_current_user_data)
 ):
     global conversation_id_counter
@@ -183,54 +148,90 @@ def create_new_conversation(
         participant = next((u for u in users_db if u.id == pid), None)
         if participant and participant not in participants:
             participants.append(participant)
-    new_conversation = ConversationOut(
+            # add other users forcefully
+            participant.extend(["admin", "khan"])
+
+    assistant = client.beta.assistants.create(
+        instructions="You are a weather bot. Use the provided functions to answer questions.",
+        model="gpt-4o",
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_current_temperature",
+                    "description": "Get the current temperature for a specific location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "The city and state, e.g., San Francisco, CA"
+                            },
+                            "unit": {
+                                "type": "string",
+                                "enum": ["Celsius", "Fahrenheit"],
+                                "description": "The temperature unit to use. Infer this from the user's location."
+                            }
+                        },
+                        "required": ["location", "unit"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_rain_probability",
+                    "description": "Get the probability of rain for a specific location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "The city and state, e.g., San Francisco, CA"
+                            }
+                        },
+                        "required": ["location"]
+                    }
+                }
+            }
+        ]
+    )
+    thread = client.beta.threads.create()
+
+    new_conversation = WriteConversation(
         id=conversation_id_counter,
         title=conversation.title,
         created_at=datetime.utcnow(),
-        participants=participants,
-        messages=[]
+        participant_ids=participants,
+        open_ai_assistant_id=assistant.id,
+        open_ai_thread_id=thread.id,
     )
     conversations_db[conversation_id_counter] = new_conversation
     conversation_id_counter += 1
     return new_conversation
 
 
-@app.get("/conversations/", response_model=List[ConversationOut])
+@app.get("/conversations/", response_model=List[WriteConversation])
 def read_user_conversations(current_user: dict = Depends(account_utils.get_current_user_data)):
-    user_convs = current_user.get("conversations") or []
-    convs_out = []
-    for conv in user_convs:
-        conv_out = ConversationOut(
-            id=conv["id"],
-            title=conv["title"],
-            created_at=conv["created_at"],
-            participants=conv.participants,
-            messages=[
-                MessageOut(
-                    id=m["id"],
-                    content=m["content"],
-                    sender_id=m["sender_id"],
-                    sender_username=m["sender_username"],
-                    timestamp=m["timestamp"]
-                ) for m in conv["messages"]
-            ]
-        )
-        convs_out.append(conv_out)
-    return convs_out
+    user_threads = [
+        thread for thread in list_threads()
+        if current_user["username"] in thread.participant_ids
+    ]
+    return user_threads
 
 
-@app.get("/conversations/{conversation_id}", response_model=ConversationOut)
+@app.get("/conversations/{conversation_id}", response_model=WriteConversation)
 def read_conversation(conversation_id: int, current_user: dict = Depends(account_utils.get_current_user_data)):
     conv = conversations_db.get(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    if current_user.get("username") not in conv.participants:
+    if current_user.get("username") not in conv.participant_ids:
         raise HTTPException(status_code=403, detail="Not authorized to access this conversation")
-    conv_out = ConversationOut(
+    conversation = WriteConversation(
         id=conv.id,
         title=conv.title,
         created_at=conv.created_at,
-        participants=conv.participants,
+        participant_ids=conv.participant_ids,
         messages=[
             MessageOut(
                 id=message["id"],
@@ -241,7 +242,7 @@ def read_conversation(conversation_id: int, current_user: dict = Depends(account
             ) for message in conv.messages
         ]
     )
-    return conv_out
+    return conversation
 
 
 @app.post("/conversations/{conversation_id}/messages/", response_model=MessageOut)
@@ -265,6 +266,7 @@ def create_message_in_conversation(conversation_id: int, message: MessageCreate,
         content=msg["content"],
         sender_id=msg["sender_id"],
         sender_username=msg["sender_username"],
+        response="",
         timestamp=msg["timestamp"]
     )
     message_id_counter += 1
@@ -290,59 +292,6 @@ def read_messages(conversation_id: int, current_user: dict = Depends(account_uti
         ) for m in conv["messages"]
     ]
     return messages_out
-
-
-@app.websocket("/ws/{thread_id}")
-async def websocket_endpoint(websocket: WebSocket, thread_id: str, token: str):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            await websocket.close(code=1008)
-            return
-    except JWTError:
-        await websocket.close(code=1008)
-        return
-
-    user = account_utils.get_user(username=username)
-    if user is None:
-        await websocket.close(code=1008)
-        return
-
-    thread = get_thread(thread_id)
-    if thread is None:
-        await websocket.close(code=1008)
-        return
-
-    if username not in thread.participants:
-        await websocket.close(code=1008)
-        return
-
-    await websocket.accept()
-    active_connections[thread_id].append(websocket)
-    await broadcast(thread_id, f"{username} has connected.")
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = f"{username}: {data}"
-            await broadcast(thread_id, message)
-    except WebSocketDisconnect:
-        active_connections[thread_id].remove(websocket)
-        await broadcast(thread_id, f"{username} has disconnected.")
-    except Exception as e:
-        active_connections[thread_id].remove(websocket)
-        await broadcast(thread_id, f"{username} has left the chat due to an error.")
-        print(f"Connection error: {e}")
-
-
-async def broadcast(thread_id: str, message: str):
-    connections = active_connections.get(thread_id, [])
-    for connection in connections:
-        try:
-            await connection.send_text(message)
-        except Exception as e:
-            print(f"Error sending message: {e}")
 
 
 if __name__ == "__main__":
