@@ -4,16 +4,10 @@ from dotenv import load_dotenv
 from typing import Any, Optional
 
 
+load_dotenv()
+
+
 class ConfigLoader:
-    def __init__(self, dotenv_filename: Optional[str] = ".env") -> None:
-        """
-        Load the .env file and initialize config variables.
-
-        :param dotenv_filename: Name of the .env file. `Default: .env`
-        """
-        dotenv_path = os.path.join(os.path.dirname(__file__), dotenv_filename)
-        load_dotenv(dotenv_path)
-
     @staticmethod
     def _str_to_bool(value: str) -> bool:
         true_values = {'true', '1', 't', 'yes', 'y'}
@@ -93,3 +87,4 @@ env = ConfigLoader()
 SECRET_KEY = env.get("SECRET_KEY", required=True)
 ALGORITHM = env.get("ALGORITHM", default="HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(env.get("ACCESS_TOKEN_EXPIRE_MINUTES", default=60))
+OPENAI_API_KEY = env.get("OPENAI_API_KEY", required=True)
