@@ -1,11 +1,10 @@
 from datetime import datetime, timedelta
-
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from typing import Optional
 from backend._config import ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM, SECRET_KEY
-from .schemas import TokenData
+from backend.core.models import TokenData
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

@@ -2,23 +2,21 @@ from fastapi import Depends, HTTPException, status
 from jose import jwt, JWTError
 
 from backend._config import SECRET_KEY, ALGORITHM
-from backend.core import models, auth
-from backend.core.models import mock_users
-from backend.core.schemas import TokenData, UserOut
-
+from backend.core.auth import oauth2_scheme, decode_access_token
+from backend.core.models import TokenData, UserOut, mock_users, UserInDB
 
 users_db = {}
 
 
 def get_user(username: str):
-    user_dict = models.mock_users.get(username)
+    user_dict = mock_users.get(username)
     if user_dict:
-        return models.UserInDB(**user_dict)
+        return UserInDB(**user_dict)
     return None
 
 
-def get_current_user(token: str = Depends(auth.oauth2_scheme)):
-    token_data = auth.decode_access_token(token)
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    token_data = decode_access_token(token)
     if not token_data or not token_data.username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -35,7 +33,7 @@ def get_current_user(token: str = Depends(auth.oauth2_scheme)):
     return user
 
 
-def get_current_user_data(token: str = Depends(auth.oauth2_scheme)) -> UserOut:
+def get_current_user_data(token: str = Depends(oauth2_scheme)) -> UserOut:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

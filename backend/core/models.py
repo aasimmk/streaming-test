@@ -1,22 +1,63 @@
-from typing import Dict, List, Optional
-import uuid
+from datetime import datetime
+from typing import Optional, List
 
 from pydantic import BaseModel
 
 
-class ConversationThread(BaseModel):
-    id: str
-    title: str
-    participants: List[str]
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
 
-class CreateThreadRequest(BaseModel):
-    title: str
+class TokenData(BaseModel):
+    username: str | None = None
 
 
-class UserInDB(BaseModel):
+class User(BaseModel):
     username: str
+
+
+class UserInDB(User):
     hashed_password: str
+
+
+class UserOut(User):
+    id: int
+    created_at: datetime
+
+
+class MessageBase(BaseModel):
+    content: str
+
+
+class MessageCreate(MessageBase):
+    pass
+
+
+class MessageOut(MessageBase):
+    id: int
+    content: str
+    sender_id: str
+    sender_username: str
+    response: Optional[str]
+    timestamp: datetime
+
+
+class ConversationBase(BaseModel):
+    title: str
+    participant_ids: List[str]
+
+
+class ReadConversation(ConversationBase):
+    pass
+
+
+class WriteConversation(ConversationBase):
+    id: int
+    created_at: datetime
+    messages: List[MessageOut] = []
+    open_ai_assistant_id: Optional[str] = None
+    open_ai_thread_id: Optional[str] = None
 
 
 # in-memory users
@@ -34,31 +75,3 @@ mock_users = {
         "hashed_password": "$2b$12$HczoMwCRPLPi/ipSquWA5OdeQ7APGRbY0u1fVv1RSAou7ALG28b.W"  # hashed "123"
     }
 }
-
-# In-memory storage for conversation threads
-threads_db: Dict[str, ConversationThread] = {}
-
-
-def create_new_thread(title: str, creator_username: str) -> ConversationThread:
-    thread_id = str(uuid.uuid4())
-    thread = ConversationThread(
-        id=thread_id,
-        title=title,
-        participants=[creator_username]
-    )
-    threads_db[thread_id] = thread
-    return thread
-
-
-def get_thread(thread_id: str) -> Optional[ConversationThread]:
-    return threads_db.get(thread_id)
-
-
-def list_threads() -> List[ConversationThread]:
-    return list(threads_db.values())
-
-
-def add_participant(thread_id: str, username: str):
-    thread = threads_db.get(thread_id)
-    if thread and username not in thread.participants:
-        thread.participants.append(username)

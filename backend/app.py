@@ -1,32 +1,25 @@
-from collections import defaultdict
-from typing import List, Optional
-
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, status
+from typing import List
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, status, WebSocketException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from openai import OpenAI
 from pydantic import BaseModel
 from datetime import datetime
-
 from backend._config import SECRET_KEY, ALGORITHM
-from backend.open_ai import client, EventHandler
-from core import schemas, auth, models
-from utils import account as account_utils
+from backend.core.auth import verify_password, create_access_token
+from backend.core.models import ReadConversation, WriteConversation, Token, MessageOut, MessageCreate, UserInDB
+from backend.core.open_ai import client, EventHandler
+from backend.core.simulators import conversations_db, active_websocket_connections
+from backend.utils.account import get_user, get_current_user, get_current_user_data
 
-active_connections = defaultdict(list)
+
+message_id_counter = 1
+conversation_id_counter = 1
 origins = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
 ]
-
-users_db = {}
-conversations_db = {}
-messages_db = {}
-user_id_counter = 1
-conversation_id_counter = 1
-message_id_counter = 1
-threads_db = {}
 
 app = FastAPI()
 openai_client = OpenAI()
@@ -41,61 +34,9 @@ app.add_middleware(
 )
 
 
-class GetOrCreateThreadRequest(BaseModel):
-    title: str
-
-
-class UserBase(BaseModel):
-    username: str
-    # email: EmailStr
-
-
-class UserCreate(UserBase):
-    password: str
-
-
-class MessageBase(BaseModel):
-    content: str
-
-
-class MessageCreate(MessageBase):
-    pass
-
-
-class MessageOut(MessageBase):
-    id: int
-    content: str
-    sender_id: str
-    sender_username: str
-    response: Optional[str]
-    timestamp: datetime
-
-
-class UserOut(UserBase):
-    id: int
-    created_at: datetime
-
-
-class ConversationBase(BaseModel):
-    title: str
-    participant_ids: List[str]
-
-
-class ReadConversation(ConversationBase):
-    pass
-
-
-class WriteConversation(ConversationBase):
-    id: int
-    created_at: datetime
-    messages: List[MessageOut] = []
-    open_ai_assistant_id: Optional[str] = None
-    open_ai_thread_id: Optional[str] = None
-
-
-@app.post("/login", response_model=schemas.Token)
+@app.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = account_utils.get_user(form_data.username)
+    user = get_user(form_data.username)
     print(user)
     if not user:
         raise HTTPException(
@@ -103,18 +44,18 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             detail="Incorrect username or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not auth.verify_password(form_data.password, user.hashed_password):
+    if not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token = auth.create_access_token(data={"sub": user.username})
+    access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
 
 @app.get("/protected-route")
-def protected_route(token: models.UserInDB = Depends(account_utils.get_current_user)):
+def protected_route(token: UserInDB = Depends(get_current_user)):
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -136,7 +77,7 @@ class ConversationParticipant(BaseModel):
 @app.post("/conversations/", response_model=WriteConversation)
 def create_new_conversation(
         conversation: ReadConversation,
-        current_user: dict = Depends(account_utils.get_current_user_data)
+        current_user: dict = Depends(get_current_user_data)
 ):
     global conversation_id_counter  # I know it's bad, but need for persistent behaviour for demo.
 
@@ -204,7 +145,7 @@ def create_new_conversation(
 
 
 @app.get("/conversations/", response_model=List[WriteConversation])
-def read_user_conversations(current_user: dict = Depends(account_utils.get_current_user_data)):
+def read_user_conversations(current_user: dict = Depends(get_current_user_data)):
     user_threads = [
         thread for thread in list_threads()
         if current_user["username"] in thread.participant_ids
@@ -213,7 +154,7 @@ def read_user_conversations(current_user: dict = Depends(account_utils.get_curre
 
 
 @app.get("/conversations/{conversation_id}", response_model=WriteConversation)
-def read_conversation(conversation_id: int, current_user: dict = Depends(account_utils.get_current_user_data)):
+def read_conversation(conversation_id: int, current_user: dict = Depends(get_current_user_data)):
     conv = conversations_db.get(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -240,7 +181,7 @@ def read_conversation(conversation_id: int, current_user: dict = Depends(account
 
 @app.post("/conversations/{conversation_id}/messages/", response_model=MessageOut)
 def create_message_in_conversation(conversation_id: int, message: MessageCreate,
-                                   current_user: dict = Depends(account_utils.get_current_user_data)):
+                                   current_user: dict = Depends(get_current_user_data)):
     global message_id_counter
     conv = conversations_db.get(conversation_id)
     if not conv:
@@ -269,7 +210,7 @@ def create_message_in_conversation(conversation_id: int, message: MessageCreate,
 
 
 @app.get("/conversations/{conversation_id}/messages/", response_model=List[MessageOut])
-def read_messages(conversation_id: int, current_user: dict = Depends(account_utils.get_current_user)):
+def read_messages(conversation_id: int, current_user: dict = Depends(get_current_user)):
     conv = conversations_db.get(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -288,7 +229,7 @@ def read_messages(conversation_id: int, current_user: dict = Depends(account_uti
 
 
 async def broadcast(conversation_id: str, message: str):
-    connections = active_connections.get(conversation_id, [])
+    connections = active_websocket_connections.get(conversation_id, [])
     for connection in connections:
         try:
             await connection.send_text(message)
@@ -302,8 +243,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
     while True:
         full_text_response = ""
-        prompt_data = await websocket.receive_json()
-        print(f"Websocket message: {prompt_data}")
+        try:
+            prompt_data = await websocket.receive_json()
+            print(f"Websocket message: {prompt_data}")
+        except WebSocketException as ex:
+            print("No data supplied to websocket. Closing connection.")
+            await websocket.close()
+            return
         try:
             token = prompt_data["access_token"]
 
